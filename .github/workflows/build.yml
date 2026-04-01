@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     env:
       BUILD_PLATFORM: x64
       BUILD_CONFIGURATION: Release
@@ -25,21 +25,6 @@ jobs:
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
-
-      # Install Windows 11 SDK 22621 and UWP workload required by the project.
-      # windows-latest may not have this SDK version pre-installed.
-      - name: Install required VS components
-        run: |
-          & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe" modify `
-            --installPath "C:\Program Files\Microsoft Visual Studio\2022\Enterprise" `
-            --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
-            --add Microsoft.VisualStudio.Component.UWP.VC.ARM64 `
-            --add Microsoft.VisualStudio.ComponentGroup.UWP.Support `
-            --add Microsoft.VisualStudio.ComponentGroup.UWP.VC `
-            --add Microsoft.VisualStudio.ComponentGroup.MSIX.Packaging `
-            --add Microsoft.Component.NetFX.Native `
-            --quiet --norestart --wait
-          Write-Output "VS component installation finished with exit code $LASTEXITCODE"
 
       # Add nuget.org as a package source alongside the Azure DevOps feed.
       # The ADO feed (shine-oss) should be public, but nuget.org is a fallback
