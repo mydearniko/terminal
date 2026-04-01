@@ -121,53 +121,28 @@ jobs:
       - name: Locate build outputs
         id: outputs
         run: |
-          $binDir = "bin\${{ env.BUILD_PLATFORM }}\${{ env.BUILD_CONFIGURATION }}"
-          echo "binDir=$binDir" >> $env:GITHUB_OUTPUT
-
-          # Find MSIX/APPX package directory (AppPackages)
-          $pkgDir = Get-ChildItem -Path $binDir -Directory -Filter "CascadiaPackage" -Recurse | Select-Object -First 1
-          if ($pkgDir) {
-            $msix = Get-ChildItem -Path $pkgDir.FullName -Include "*.msix","*.msixbundle","*.appx" -Recurse | Select-Object -First 1
+          # MSIX is output to src/cascadia/CascadiaPackage/AppPackages/
+          $appPkgs = "src\cascadia\CascadiaPackage\AppPackages"
+          if (Test-Path $appPkgs) {
+            $msix = Get-ChildItem -Path $appPkgs -Filter "*.msix" -Recurse | Select-Object -First 1
             if ($msix) {
-              echo "msixDir=$($pkgDir.FullName)" >> $env:GITHUB_OUTPUT
+              echo "msixPath=$($msix.FullName)" >> $env:GITHUB_OUTPUT
+              echo "appPackagesDir=$(Resolve-Path $appPkgs)" >> $env:GITHUB_OUTPUT
               echo "hasPackage=true" >> $env:GITHUB_OUTPUT
-              Write-Output "Found MSIX dir: $($pkgDir.FullName)"
-              Get-ChildItem $pkgDir.FullName -Recurse | ForEach-Object { Write-Output "  $($_.FullName)" }
+              Write-Output "Found MSIX: $($msix.FullName)"
             }
-          }
-
-          # Also check AppPackages
-          $appPkgs = Get-ChildItem -Path $binDir -Directory -Filter "AppPackages" -Recurse | Select-Object -First 1
-          if ($appPkgs) {
-            echo "appPackagesDir=$($appPkgs.FullName)" >> $env:GITHUB_OUTPUT
-            echo "hasAppPackages=true" >> $env:GITHUB_OUTPUT
-            Write-Output "Found AppPackages: $($appPkgs.FullName)"
-            Get-ChildItem $appPkgs.FullName -Recurse | ForEach-Object { Write-Output "  $($_.FullName)" }
-          }
-
-          if (-not $msix -and -not $appPkgs) {
+          } else {
             echo "hasPackage=false" >> $env:GITHUB_OUTPUT
-            echo "hasAppPackages=false" >> $env:GITHUB_OUTPUT
-            Write-Output "No MSIX found, listing bin dir structure:"
-            Get-ChildItem $binDir -Directory | ForEach-Object { Write-Output "  $($_.Name)/" }
+            Write-Output "AppPackages directory not found"
           }
 
       - name: Upload MSIX Installer
         uses: actions/upload-artifact@v4
-        if: steps.outputs.outputs.hasAppPackages == 'true'
+        if: steps.outputs.outputs.hasPackage == 'true'
         with:
           name: WindowsTerminal-Installer-${{ env.BUILD_PLATFORM }}
           path: |
-            ${{ steps.outputs.outputs.appPackagesDir }}/
-            WindowsTerminalDev.cer
-
-      - name: Upload MSIX Package (fallback)
-        uses: actions/upload-artifact@v4
-        if: steps.outputs.outputs.hasPackage == 'true' && steps.outputs.outputs.hasAppPackages != 'true'
-        with:
-          name: WindowsTerminal-MSIX-${{ env.BUILD_PLATFORM }}
-          path: |
-            ${{ steps.outputs.outputs.msixDir }}/
+            src/cascadia/CascadiaPackage/AppPackages/
             WindowsTerminalDev.cer
 
       - name: Upload Build Log
