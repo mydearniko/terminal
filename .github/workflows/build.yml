@@ -13,6 +13,7 @@ jobs:
     env:
       BUILD_PLATFORM: x64
       BUILD_CONFIGURATION: Release
+      VCPKG_BASELINE: 15e5f3820f0370f1ba7150853762cec0688cd396
 
     steps:
       - name: Checkout
@@ -26,20 +27,55 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Add nuget.org as a package source alongside the Azure DevOps feed.
-      # The ADO feed (shine-oss) should be public, but nuget.org is a fallback
-      # for common packages like CppWinRT, WinUI, WebView2, WIL, etc.
+      # ── Caches ─────────────────────────────────────────────
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: packages
+          key: nuget-${{ hashFiles('dep/nuget/packages.config', 'build/packages.config', 'src/common.nugetversions.props') }}
+          restore-keys: nuget-
+
+      - name: Cache vcpkg
+        id: vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dep/vcpkg
+            obj/x64/vcpkg
+          key: vcpkg-${{ env.VCPKG_BASELINE }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ env.VCPKG_BASELINE }}-
+
+      - name: Cache compiled objects
+        uses: actions/cache@v4
+        with:
+          path: obj
+          key: obj-${{ env.BUILD_PLATFORM }}-${{ env.BUILD_CONFIGURATION }}-${{ github.sha }}
+          restore-keys: |
+            obj-${{ env.BUILD_PLATFORM }}-${{ env.BUILD_CONFIGURATION }}-
+
+      # ── Setup ──────────────────────────────────────────────
       - name: Add nuget.org package source
         run: nuget sources add -Name "nuget.org" -Source "https://api.nuget.org/v3/index.json" -ConfigFile NuGet.config
 
       - name: Bootstrap vcpkg
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           if (Test-Path "dep\vcpkg") { Remove-Item -Recurse -Force "dep\vcpkg" }
           git clone https://github.com/microsoft/vcpkg dep/vcpkg
           cd dep/vcpkg
-          git checkout 15e5f3820f0370f1ba7150853762cec0688cd396
+          git checkout $env:VCPKG_BASELINE
           ./bootstrap-vcpkg.bat
           cd ../..
+          echo "VCPKG_ROOT=$(Resolve-Path dep/vcpkg)" >> $env:GITHUB_ENV
+
+      - name: Set vcpkg root (cache hit)
+        if: steps.vcpkg-cache.outputs.cache-hit == 'true'
+        run: |
+          if (-not (Test-Path "dep\vcpkg\vcpkg.exe")) {
+            cd dep/vcpkg
+            ./bootstrap-vcpkg.bat
+            cd ../..
+          }
           echo "VCPKG_ROOT=$(Resolve-Path dep/vcpkg)" >> $env:GITHUB_ENV
 
       - name: Generate NOTICE.html
@@ -80,13 +116,11 @@ jobs:
           Write-Output "Latest VCToolsVersion: $LatestVCToolsVersion"
           echo "VCToolsVersion=$LatestVCToolsVersion" >> $env:GITHUB_ENV
 
-      # Restore build-tools NuGet packages (TAEF, PGO helpers, debug tools).
-      # These are optional for the main build - continue if ADO feed needs auth.
+      # ── NuGet Restore ──────────────────────────────────────
       - name: Restore NuGet packages (build tools)
         continue-on-error: true
         run: nuget restore build/packages.config -ConfigFile NuGet.config -PackagesDirectory packages
 
-      # Restore solution-level NuGet packages (CppWinRT, WinUI, WebView2, etc.)
       - name: Restore NuGet packages (solution)
         run: >-
           msbuild OpenConsole.slnx
@@ -95,10 +129,10 @@ jobs:
           /p:Configuration=${{ env.BUILD_CONFIGURATION }}
           /m
 
-      # Restore global NuGet packages from dep/nuget/packages.config
       - name: Restore NuGet packages (global)
         run: nuget restore dep/nuget/packages.config -ConfigFile NuGet.config -PackagesDirectory packages
 
+      # ── Build ──────────────────────────────────────────────
       - name: Build Terminal
         run: >-
           msbuild OpenConsole.slnx
