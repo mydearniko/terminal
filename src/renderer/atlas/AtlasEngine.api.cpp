@@ -718,6 +718,54 @@ void AtlasEngine::_resolveFontMetrics(const FontInfoDesired& fontInfoDesired, Fo
         THROW_IF_FAILED(fontCollection->GetFontFamily(index, primaryFontFamily.addressof()));
     }
 
+    // Try to find a Twemoji font for country flag emoji support.
+    // Segoe UI Emoji doesn't include flag emoji ligatures, so we add a targeted
+    // font fallback mapping for Regional Indicator (U+1F1E6-1F1FF), Tag (U+E0061-E007F),
+    // and Black Flag (U+1F3F4) codepoint ranges to a Twemoji-based font if available.
+    // This must be added before the system fallback so it takes priority over Segoe UI Emoji.
+    {
+        static constexpr std::wstring_view flagFontCandidates[] = {
+            L"Twemoji Mozilla",
+            L"Twemoji",
+            L"Twitter Color Emoji",
+            L"Noto Color Emoji",
+        };
+
+        for (const auto& candidate : flagFontCandidates)
+        {
+            u32 index = 0;
+            BOOL exists = false;
+            THROW_IF_FAILED(fontCollection->FindFamilyName(candidate.data(), &index, &exists));
+            if (exists)
+            {
+                if (!fontFallbackBuilder)
+                {
+                    THROW_IF_FAILED(_p.dwriteFactory->CreateFontFallbackBuilder(fontFallbackBuilder.addressof()));
+                }
+
+                // Regional Indicator Symbols (U+1F1E6-U+1F1FF) and related emoji ranges
+                // where flag sequences are composed.
+                static constexpr DWRITE_UNICODE_RANGE flagRanges[] = {
+                    { 0x1F1E6, 0x1F1FF }, // Regional Indicator Symbols
+                    { 0x1F3F4, 0x1F3F4 }, // Waving Black Flag (used in region tag sequences)
+                    { 0xE0061, 0xE007F }, // Tags Block (region subtag letters + cancel tag)
+                };
+
+                auto candidatePtr = candidate.data();
+                THROW_IF_FAILED(fontFallbackBuilder->AddMapping(
+                    /* ranges                 */ flagRanges,
+                    /* rangesCount            */ ARRAYSIZE(flagRanges),
+                    /* targetFamilyNames      */ &candidatePtr,
+                    /* targetFamilyNamesCount */ 1,
+                    /* fontCollection         */ fontCollection.get(),
+                    /* localeName             */ nullptr,
+                    /* baseFamilyName         */ nullptr,
+                    /* scale                  */ 1.0f));
+                break;
+            }
+        }
+    }
+
     auto fontFallback = _api.systemFontFallback;
     if (fontFallbackBuilder)
     {

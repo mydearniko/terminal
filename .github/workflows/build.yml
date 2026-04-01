@@ -1,0 +1,145 @@
+name: Build Windows Terminal
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      BUILD_PLATFORM: x64
+      BUILD_CONFIGURATION: Release
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+
+    - name: Setup NuGet
+      uses: nuget/setup-nuget@v2
+
+    - name: Setup MSBuild
+      uses: microsoft/setup-msbuild@v2
+
+    # Add nuget.org as a package source alongside the Azure DevOps feed.
+    # The ADO feed (shine-oss) should be public, but nuget.org is a fallback
+    # for common packages like CppWinRT, WinUI, WebView2, WIL, etc.
+    - name: Add nuget.org package source
+      run: nuget sources add -Name "nuget.org" -Source "https://api.nuget.org/v3/index.json" -ConfigFile NuGet.config
+
+    - name: Bootstrap vcpkg
+      run: |
+        if (Test-Path "dep\vcpkg") { Remove-Item -Recurse -Force "dep\vcpkg" }
+        git clone --depth 1 https://github.com/microsoft/vcpkg dep/vcpkg
+        & dep/vcpkg/bootstrap-vcpkg.bat
+        echo "VCPKG_ROOT=$(Resolve-Path dep/vcpkg)" >> $env:GITHUB_ENV
+
+    - name: Generate NOTICE.html
+      run: |
+        powershell -ExecutionPolicy Bypass -File ./build/scripts/Generate-ThirdPartyNotices.ps1 -MarkdownNoticePath ./NOTICE.md -OutputPath ./src/cascadia/CascadiaPackage/NOTICE.html
+
+    - name: Set VCToolsVersion
+      run: |
+        $VSInstances = ([xml](& 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -include packages -format xml))
+        $VSPackages = $VSInstances.instances.instance.packages.package
+        $LatestVCPackage = ($VSPackages | ? { $_.id -eq "Microsoft.VisualCpp.Tools.Core" })
+        $LatestVCToolsVersion = $LatestVCPackage.version
+
+        $VSRoot = (& 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe' -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property 'resolvedInstallationPath')
+        $VCToolsRoot = Join-Path $VSRoot "VC\Tools\MSVC"
+        $PackageVCToolPath = Join-Path $VCToolsRoot $LatestVCToolsVersion
+        If ($Null -Eq (Get-Item $PackageVCToolPath -ErrorAction:Ignore)) {
+          $VCToolsVersions = Get-ChildItem $VCToolsRoot | ForEach-Object { [Version]$_.Name } | Sort -Descending
+          $LatestActualVCToolsVersion = $VCToolsVersions | Select -First 1
+          If ([Version]$LatestVCToolsVersion -Ne $LatestActualVCToolsVersion) {
+            Write-Output "VC Tools Mismatch: Directory = $LatestActualVCToolsVersion, Package = $LatestVCToolsVersion"
+            $LatestVCToolsVersion = $LatestActualVCToolsVersion.ToString(3)
+          }
+        }
+        Write-Output "Latest VCToolsVersion: $LatestVCToolsVersion"
+        echo "VCToolsVersion=$LatestVCToolsVersion" >> $env:GITHUB_ENV
+
+    # Restore build-tools NuGet packages (TAEF, PGO helpers, debug tools).
+    # These are optional for the main build - continue if ADO feed needs auth.
+    - name: Restore NuGet packages (build tools)
+      continue-on-error: true
+      run: nuget restore build/packages.config -ConfigFile NuGet.config -PackagesDirectory packages
+
+    # Restore solution-level NuGet packages (CppWinRT, WinUI, WebView2, etc.)
+    - name: Restore NuGet packages (solution)
+      run: >-
+        msbuild OpenConsole.slnx
+        /t:Restore
+        /p:Platform=${{ env.BUILD_PLATFORM }}
+        /p:Configuration=${{ env.BUILD_CONFIGURATION }}
+        /m
+
+    # Restore global NuGet packages from dep/nuget/packages.config
+    - name: Restore NuGet packages (global)
+      run: nuget restore dep/nuget/packages.config -ConfigFile NuGet.config -PackagesDirectory packages
+
+    - name: Build Terminal
+      run: >-
+        msbuild OpenConsole.slnx
+        /p:Configuration=${{ env.BUILD_CONFIGURATION }}
+        /p:Platform=${{ env.BUILD_PLATFORM }}
+        /p:WindowsTerminalOfficialBuild=true
+        /p:WindowsTerminalBranding=Dev
+        /p:PGOBuildMode=None
+        /t:Terminal\CascadiaPackage
+        /m
+        /bl:msbuild.binlog
+
+    - name: Locate build outputs
+      id: outputs
+      run: |
+        $binDir = "bin\${{ env.BUILD_PLATFORM }}\${{ env.BUILD_CONFIGURATION }}"
+        echo "binDir=$binDir" >> $env:GITHUB_OUTPUT
+
+        # Find MSIX/APPX package
+        $pkg = Get-ChildItem -Path $binDir -Include "*.msix","*.appx" -Recurse | Select-Object -First 1
+        if ($pkg) {
+          echo "package=$($pkg.FullName)" >> $env:GITHUB_OUTPUT
+          echo "hasPackage=true" >> $env:GITHUB_OUTPUT
+          Write-Output "Found package: $($pkg.FullName)"
+        } else {
+          echo "hasPackage=false" >> $env:GITHUB_OUTPUT
+          Write-Output "No MSIX/APPX found"
+        }
+
+        # Check for unpackaged WindowsTerminal.exe
+        $wtDir = Join-Path $binDir "WindowsTerminal"
+        if (Test-Path (Join-Path $wtDir "WindowsTerminal.exe")) {
+          echo "hasExe=true" >> $env:GITHUB_OUTPUT
+          Write-Output "Found WindowsTerminal.exe in $wtDir"
+        } else {
+          echo "hasExe=false" >> $env:GITHUB_OUTPUT
+        }
+
+    - name: Upload MSIX Package
+      uses: actions/upload-artifact@v4
+      if: steps.outputs.outputs.hasPackage == 'true'
+      with:
+        name: WindowsTerminal-MSIX-${{ env.BUILD_PLATFORM }}
+        path: ${{ steps.outputs.outputs.package }}
+
+    - name: Upload Unpackaged Terminal
+      uses: actions/upload-artifact@v4
+      if: steps.outputs.outputs.hasExe == 'true'
+      with:
+        name: WindowsTerminal-Portable-${{ env.BUILD_PLATFORM }}
+        path: |
+          bin/${{ env.BUILD_PLATFORM }}/${{ env.BUILD_CONFIGURATION }}/WindowsTerminal/
+          !bin/${{ env.BUILD_PLATFORM }}/${{ env.BUILD_CONFIGURATION }}/WindowsTerminal/*.pdb
+
+    - name: Upload Build Log
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: build-log
+        path: msbuild.binlog
