@@ -24,7 +24,7 @@ The user must install a Twemoji font (e.g. "Twemoji Mozilla") on their Windows s
 ## Build System
 
 - **Solution**: `OpenConsole.slnx` (MSBuild, C++/WinRT, UWP/MSIX packaging)
-- **CI**: `.github/workflows/build.yml` — GitHub Actions on `windows-2022` runner
+- **CI**: `.github/workflows/build.yml` — GitHub Actions on `windows-2025-vs2026` runner
 - **Output**: MSIX installer at `src/cascadia/CascadiaPackage/AppPackages/`
 - **Signing**: Self-signed cert (Subject: `CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US`, password: `BuildCert123!`). Sideloading requires trusting the exported `.cer` file.
 - **Branding**: Builds as "Windows Terminal (Dev)" so it doesn't conflict with the store version
