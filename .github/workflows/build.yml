@@ -146,38 +146,145 @@ jobs:
           /m
           /bl:msbuild.binlog
 
-      - name: Export signing certificate (public key only)
+      - name: Prepare one-click installer
         run: |
-          $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $env:SIGNING_CERT_THUMBPRINT }
-          Export-Certificate -Cert $cert -FilePath WindowsTerminalDev.cer
-          Write-Output "Exported certificate for sideloading trust"
-
-      - name: Locate build outputs
-        id: outputs
-        run: |
-          # MSIX is output to src/cascadia/CascadiaPackage/AppPackages/
           $appPkgs = "src\cascadia\CascadiaPackage\AppPackages"
-          if (Test-Path $appPkgs) {
-            $msix = Get-ChildItem -Path $appPkgs -Filter "*.msix" -Recurse | Select-Object -First 1
-            if ($msix) {
-              echo "msixPath=$($msix.FullName)" >> $env:GITHUB_OUTPUT
-              echo "appPackagesDir=$(Resolve-Path $appPkgs)" >> $env:GITHUB_OUTPUT
-              echo "hasPackage=true" >> $env:GITHUB_OUTPUT
-              Write-Output "Found MSIX: $($msix.FullName)"
-            }
-          } else {
-            echo "hasPackage=false" >> $env:GITHUB_OUTPUT
-            Write-Output "AppPackages directory not found"
+          $msixFiles = @(Get-ChildItem -Path $appPkgs -Filter "*.msix" -Recurse)
+          if ($msixFiles.Count -ne 1) {
+            throw "Expected exactly one MSIX in $appPkgs, found $($msixFiles.Count)."
           }
+
+          $msix = $msixFiles[0]
+          $packageDir = $msix.Directory.FullName
+          $certificateFiles = @(Get-ChildItem -LiteralPath $packageDir -Filter "*.cer" -File)
+          if ($certificateFiles.Count -ne 1) {
+            throw "Expected exactly one signing certificate beside the MSIX, found $($certificateFiles.Count)."
+          }
+
+          $installerDir = Join-Path $PWD "installer"
+          Remove-Item -LiteralPath $installerDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $installerDir | Out-Null
+          Copy-Item -LiteralPath $msix.FullName -Destination $installerDir
+          Copy-Item -LiteralPath $certificateFiles[0].FullName -Destination $installerDir
+
+          $dependencySource = Join-Path $packageDir "Dependencies\x64"
+          if (Test-Path -LiteralPath $dependencySource) {
+            $dependencyDestination = Join-Path $installerDir "Dependencies\x64"
+            New-Item -ItemType Directory -Path $dependencyDestination -Force | Out-Null
+            Copy-Item -Path "$dependencySource\*" -Destination $dependencyDestination -Recurse
+          }
+
+          $installScript = @'
+          [CmdletBinding()]
+          param()
+
+          $ErrorActionPreference = 'Stop'
+
+          try {
+              $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+              $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+              $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+              if (-not $isAdministrator) {
+                  Write-Host 'Administrator approval is required to trust the signing certificate.'
+                  $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+                  $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+                  exit $process.ExitCode
+              }
+
+              $packages = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -eq '.msix' })
+              $certificates = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -eq '.cer' })
+              if ($packages.Count -ne 1) {
+                  throw "Expected exactly one MSIX beside this installer, found $($packages.Count)."
+              }
+              if ($certificates.Count -ne 1) {
+                  throw "Expected exactly one certificate beside this installer, found $($certificates.Count)."
+              }
+
+              $certificate = Get-PfxCertificate -FilePath $certificates[0].FullName
+              $trustedCertificate = "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)"
+              if (-not (Test-Path -LiteralPath $trustedCertificate)) {
+                  Write-Host 'Trusting this build signing certificate...'
+                  Import-Certificate -FilePath $certificates[0].FullName -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
+              } else {
+                  Write-Host 'Signing certificate is already trusted.'
+              }
+
+              $dependencyDir = Join-Path $PSScriptRoot 'Dependencies\x64'
+              $dependencies = @()
+              if (Test-Path -LiteralPath $dependencyDir) {
+                  $dependencies = @(
+                      Get-ChildItem -LiteralPath $dependencyDir -File |
+                          Where-Object { $_.Extension -in '.appx', '.msix', '.appxbundle', '.msixbundle' } |
+                          ForEach-Object { $_.FullName }
+                  )
+              }
+
+              Write-Host 'Installing Windows Terminal (Dev)...'
+              $parameters = @{
+                  Path = $packages[0].FullName
+                  ForceApplicationShutdown = $true
+                  ForceUpdateFromAnyVersion = $true
+              }
+              if ($dependencies.Count -gt 0) {
+                  $parameters.DependencyPath = [string[]]$dependencies
+              }
+              Add-AppxPackage @parameters
+
+              Write-Host ''
+              Write-Host 'Windows Terminal (Dev) installed successfully.' -ForegroundColor Green
+              exit 0
+          } catch {
+              Write-Host ''
+              Write-Host 'Installation failed:' -ForegroundColor Red
+              Write-Host $_.Exception.Message -ForegroundColor Red
+              exit 1
+          }
+          '@
+
+          $launcher = @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          title Install Windows Terminal (Dev)
+          echo Installing Windows Terminal (Dev)...
+          echo Windows will ask for administrator approval.
+          echo.
+          "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1"
+          set "INSTALL_EXIT_CODE=%ERRORLEVEL%"
+          echo.
+          if not "%INSTALL_EXIT_CODE%"=="0" echo Installation failed. See the error above.
+          pause
+          exit /b %INSTALL_EXIT_CODE%
+          '@
+
+          $readme = @'
+          Windows Terminal (Dev) - country flag emoji build
+
+          1. Install a supported emoji font, such as Twemoji Mozilla.
+          2. Double-click Install.cmd.
+          3. Approve the Windows administrator prompt.
+
+          The installer trusts only this build's public signing certificate in the
+          Local Machine Trusted People store, installs the required x64 dependency,
+          and then installs or updates Windows Terminal (Dev).
+          '@
+
+          Set-Content -LiteralPath (Join-Path $installerDir "Install.ps1") -Value $installScript -Encoding ascii
+          Set-Content -LiteralPath (Join-Path $installerDir "Install.cmd") -Value $launcher -Encoding ascii
+          Set-Content -LiteralPath (Join-Path $installerDir "README-FIRST.txt") -Value $readme -Encoding ascii
+
+          Write-Output "Prepared installer from $($msix.FullName):"
+          Get-ChildItem -LiteralPath $installerDir -Recurse | ForEach-Object { Write-Output $_.FullName }
 
       - name: Upload MSIX Installer
         uses: actions/upload-artifact@v4
-        if: steps.outputs.outputs.hasPackage == 'true'
         with:
           name: WindowsTerminal-Installer-${{ env.BUILD_PLATFORM }}
-          path: |
-            src/cascadia/CascadiaPackage/AppPackages/
-            WindowsTerminalDev.cer
+          path: installer/
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Upload Build Log
         uses: actions/upload-artifact@v4
