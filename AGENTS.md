@@ -48,7 +48,7 @@ The workflow caches three things to make rebuilds fast (~5 min instead of ~20 mi
 - **vcpkg** (`dep/vcpkg/` + `obj/x64/vcpkg/`) — keyed on baseline commit + vcpkg.json
 - **Compiled objects** (`obj/`) — keyed on commit SHA with prefix restore for incremental builds
 
-vcpkg baseline commit: `15e5f3820f0370f1ba7150853762cec0688cd396`
+vcpkg baseline commit: `927f62e4b8838bd7e441e9c45103a16ffd75007e`
 
 ## Syncing with Upstream
 
