@@ -132,6 +132,22 @@ jobs:
       - name: Restore NuGet packages (global)
         run: nuget restore dep/nuget/packages.config -ConfigFile NuGet.config -PackagesDirectory packages
 
+      - name: Stamp Dev package version
+        run: |
+          $version = "0.0.${{ github.run_number }}.${{ github.run_attempt }}"
+          $manifestPath = "src\cascadia\CascadiaPackage\Package-Dev.appxmanifest"
+          $resolvedManifestPath = (Resolve-Path -LiteralPath $manifestPath).Path
+          [xml]$manifest = Get-Content -LiteralPath $resolvedManifestPath -Raw
+          $manifest.Package.Identity.Version = $version
+          $manifest.Save($resolvedManifestPath)
+
+          [xml]$verification = Get-Content -LiteralPath $resolvedManifestPath -Raw
+          if ($verification.Package.Identity.Version -ne $version) {
+            throw "Failed to stamp package version $version."
+          }
+          echo "PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Output "Building Windows Terminal (Dev) package version $version"
+
       # ── Build ──────────────────────────────────────────────
       - name: Build Terminal
         run: >-
@@ -200,6 +216,19 @@ jobs:
               }
               if ($certificates.Count -ne 1) {
                   throw "Expected exactly one certificate beside this installer, found $($certificates.Count)."
+              }
+
+              $versionMatch = [regex]::Match($packages[0].BaseName, '_(\d+\.\d+\.\d+\.\d+)_')
+              if (-not $versionMatch.Success) {
+                  throw "Could not determine the package version from $($packages[0].Name)."
+              }
+              $packageVersion = [version]$versionMatch.Groups[1].Value
+              $installedPackage = Get-AppxPackage -Name 'WindowsTerminalDev' -ErrorAction SilentlyContinue |
+                  Sort-Object Version -Descending |
+                  Select-Object -First 1
+              if ($null -ne $installedPackage -and [version]$installedPackage.Version -eq $packageVersion) {
+                  Write-Host "Windows Terminal (Dev) $packageVersion is already installed." -ForegroundColor Green
+                  exit 0
               }
 
               $certificate = Get-PfxCertificate -FilePath $certificates[0].FullName
