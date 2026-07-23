@@ -644,6 +644,22 @@ jobs:
           -File .\installer\Install.ps1
           -ValidateOnly
 
+      - name: Smoke-test one-click installation
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'The Windows runner must be elevated for the installer smoke test.'
+          }
+
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File .\installer\Install.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "The one-click installer exited with code $LASTEXITCODE."
+          }
+
       - name: Upload MSIX Installer
         uses: actions/upload-artifact@v4
         with:
