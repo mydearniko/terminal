@@ -163,14 +163,15 @@ jobs:
           /bl:msbuild.binlog
 
       - name: Build terminal adapter unit tests
-        run: >-
-          msbuild OpenConsole.slnx
-          /p:Configuration=${{ env.BUILD_CONFIGURATION }}
-          /p:Platform=${{ env.BUILD_PLATFORM }}
-          /p:WindowsTerminalOfficialBuild=true
-          /p:PGOBuildMode=None
-          /t:TerminalAdapter.UnitTests
-          /m
+        run: |
+          $solutionDir = "$PWD\"
+          msbuild src\terminal\adapter\ut_adapter\Adapter.UnitTests.vcxproj `
+            "/p:SolutionDir=$solutionDir" `
+            "/p:Configuration=$env:BUILD_CONFIGURATION" `
+            "/p:Platform=$env:BUILD_PLATFORM" `
+            /p:WindowsTerminalOfficialBuild=true `
+            /p:PGOBuildMode=None `
+            /m
 
       - name: Run terminal adapter unit tests
         run: |
