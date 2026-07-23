@@ -162,6 +162,30 @@ jobs:
           /m
           /bl:msbuild.binlog
 
+      - name: Build terminal adapter unit tests
+        run: >-
+          msbuild OpenConsole.slnx
+          /p:Configuration=${{ env.BUILD_CONFIGURATION }}
+          /p:Platform=${{ env.BUILD_PLATFORM }}
+          /p:WindowsTerminalOfficialBuild=true
+          /p:PGOBuildMode=None
+          /t:TerminalAdapter.UnitTests
+          /m
+
+      - name: Run terminal adapter unit tests
+        run: |
+          $testRoot = Join-Path $PWD "bin\${{ env.BUILD_PLATFORM }}\${{ env.BUILD_CONFIGURATION }}"
+          $testDlls = @(Get-ChildItem -LiteralPath $testRoot -Filter "ConAdapter.Unit.Tests.dll" -File -Recurse)
+          if ($testDlls.Count -ne 1) {
+            throw "Expected exactly one terminal adapter test DLL, found $($testDlls.Count)."
+          }
+
+          & .\build\scripts\Run-Tests.ps1 `
+            -MatchPattern "ConAdapter.Unit.Tests.dll" `
+            -Platform "${{ env.BUILD_PLATFORM }}" `
+            -Configuration "${{ env.BUILD_CONFIGURATION }}" `
+            -Root $testRoot
+
       - name: Prepare one-click installer
         run: |
           $appPkgs = "src\cascadia\CascadiaPackage\AppPackages"
@@ -190,48 +214,325 @@ jobs:
             Copy-Item -Path "$dependencySource\*" -Destination $dependencyDestination -Recurse
           }
 
+          $twemojiUrl = "https://github.com/mozilla/twemoji-colr/releases/download/v0.7.0/Twemoji.Mozilla.ttf"
+          $twemojiHash = "6D90152EE0D29E82FE2A87793AF5AA4B7AD13E6538360889E141E81ED299EE8E"
+          $twemojiPath = Join-Path $installerDir "Twemoji.Mozilla.ttf"
+          Invoke-WebRequest -Uri $twemojiUrl -OutFile $twemojiPath
+          $downloadedTwemojiHash = (Get-FileHash -LiteralPath $twemojiPath -Algorithm SHA256).Hash
+          if ($downloadedTwemojiHash -ne $twemojiHash) {
+            throw "Twemoji Mozilla checksum mismatch: expected $twemojiHash, got $downloadedTwemojiHash."
+          }
+
+          $twemojiLicenseUrl = "https://raw.githubusercontent.com/mozilla/twemoji-colr/v0.7.0/LICENSE.md"
+          $twemojiLicenseHash = "64419EDC28E9163204C3BE73F835A8DFC34CD6C9B8F7D067BB685F119F839A99"
+          $twemojiLicensePath = Join-Path $installerDir "Twemoji-LICENSE.md"
+          Invoke-WebRequest -Uri $twemojiLicenseUrl -OutFile $twemojiLicensePath
+          $downloadedLicenseHash = (Get-FileHash -LiteralPath $twemojiLicensePath -Algorithm SHA256).Hash
+          if ($downloadedLicenseHash -ne $twemojiLicenseHash) {
+            throw "Twemoji license checksum mismatch: expected $twemojiLicenseHash, got $downloadedLicenseHash."
+          }
+
           $installScript = @'
           [CmdletBinding()]
-          param()
+          param(
+              [switch]$ValidateOnly
+          )
 
+          Set-StrictMode -Version 2.0
           $ErrorActionPreference = 'Stop'
 
-          try {
-              $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-              $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-              $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          function Test-PayloadChecksums {
+              param([string]$Root)
 
-              if (-not $isAdministrator) {
-                  Write-Host 'Administrator approval is required to trust the signing certificate.'
-                  $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-                  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-                  $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
-                  exit $process.ExitCode
+              $checksumPath = Join-Path $Root 'SHA256SUMS.txt'
+              if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
+                  throw 'SHA256SUMS.txt is missing from the installer.'
               }
+
+              $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+              $checksumFullPath = [IO.Path]::GetFullPath($checksumPath)
+              $verifiedPaths = @{}
+              $verified = 0
+              foreach ($line in Get-Content -LiteralPath $checksumPath) {
+                  if ([string]::IsNullOrWhiteSpace($line)) {
+                      continue
+                  }
+
+                  $parts = $line -split "`t", 2
+                  if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9A-Fa-f]{64}$') {
+                      throw "Invalid checksum entry: $line"
+                  }
+
+                  $relativePath = $parts[1].Replace('/', '\')
+                  if ([IO.Path]::IsPathRooted($relativePath)) {
+                      throw "Checksum entry must be relative: $relativePath"
+                  }
+
+                  $payloadPath = [IO.Path]::GetFullPath((Join-Path $rootPath $relativePath))
+                  if (-not $payloadPath.StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase)) {
+                      throw "Checksum entry escapes the installer directory: $relativePath"
+                  }
+                  if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
+                      throw "Installer payload is missing: $relativePath"
+                  }
+                  if ($payloadPath.Equals($checksumFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+                      throw 'SHA256SUMS.txt must not contain a checksum for itself.'
+                  }
+                  if ($verifiedPaths.ContainsKey($payloadPath)) {
+                      throw "Duplicate checksum entry: $relativePath"
+                  }
+
+                  $actualHash = (Get-FileHash -LiteralPath $payloadPath -Algorithm SHA256).Hash
+                  if ($actualHash -ne $parts[0]) {
+                      throw "Checksum mismatch for $relativePath."
+                  }
+                  $verifiedPaths[$payloadPath] = $true
+                  $verified++
+              }
+
+              if ($verified -eq 0) {
+                  throw 'SHA256SUMS.txt contains no payload entries.'
+              }
+
+              $payloadFiles = @(
+                  Get-ChildItem -LiteralPath $Root -File -Recurse |
+                      Where-Object { -not $_.FullName.Equals($checksumFullPath, [StringComparison]::OrdinalIgnoreCase) }
+              )
+              foreach ($payloadFile in $payloadFiles) {
+                  $payloadFullPath = [IO.Path]::GetFullPath($payloadFile.FullName)
+                  if (-not $verifiedPaths.ContainsKey($payloadFullPath)) {
+                      $relativePath = $payloadFullPath.Substring($rootPath.Length)
+                      throw "Installer payload has no checksum entry: $relativePath"
+                  }
+              }
+              if ($payloadFiles.Count -ne $verified) {
+                  throw 'The installer payload inventory does not match SHA256SUMS.txt.'
+              }
+          }
+
+          function Get-MsixMetadata {
+              param([string]$Path)
+
+              Add-Type -AssemblyName System.IO.Compression.FileSystem
+              Add-Type -AssemblyName System.Security
+              $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+              try {
+                  $manifestEntry = $archive.GetEntry('AppxManifest.xml')
+                  if ($null -eq $manifestEntry) {
+                      throw 'The MSIX does not contain AppxManifest.xml.'
+                  }
+
+                  $stream = $manifestEntry.Open()
+                  $reader = New-Object IO.StreamReader($stream)
+                  try {
+                      [xml]$manifest = $reader.ReadToEnd()
+                  } finally {
+                      $reader.Dispose()
+                      $stream.Dispose()
+                  }
+
+                  $signatureEntry = $archive.GetEntry('AppxSignature.p7x')
+                  if ($null -eq $signatureEntry) {
+                      throw 'The MSIX does not contain AppxSignature.p7x.'
+                  }
+
+                  $signatureStream = $signatureEntry.Open()
+                  $signatureBuffer = New-Object IO.MemoryStream
+                  try {
+                      $signatureStream.CopyTo($signatureBuffer)
+                      $signatureBytes = $signatureBuffer.ToArray()
+                  } finally {
+                      $signatureBuffer.Dispose()
+                      $signatureStream.Dispose()
+                  }
+              } finally {
+                  $archive.Dispose()
+              }
+
+              if ($signatureBytes.Length -le 4 -or [Text.Encoding]::ASCII.GetString($signatureBytes, 0, 4) -cne 'PKCX') {
+                  throw 'The MSIX signature has an invalid header.'
+              }
+
+              $cmsBytes = New-Object byte[] ($signatureBytes.Length - 4)
+              [Array]::Copy($signatureBytes, 4, $cmsBytes, 0, $cmsBytes.Length)
+              $signedCms = New-Object Security.Cryptography.Pkcs.SignedCms
+              $signedCms.Decode($cmsBytes)
+              try {
+                  $signedCms.CheckSignature($true)
+              } catch {
+                  throw "The MSIX signature is invalid: $($_.Exception.Message)"
+              }
+              if ($signedCms.SignerInfos.Count -ne 1 -or $null -eq $signedCms.SignerInfos[0].Certificate) {
+                  throw 'The MSIX must contain exactly one identifiable signer.'
+              }
+
+              return [pscustomobject]@{
+                  Name = [string]$manifest.Package.Identity.Name
+                  Publisher = [string]$manifest.Package.Identity.Publisher
+                  Version = [version]$manifest.Package.Identity.Version
+                  SignerThumbprint = [string]$signedCms.SignerInfos[0].Certificate.Thumbprint
+              }
+          }
+
+          function Get-InstalledTwemojiMozillaFamily {
+              $fontCollection = $null
+              try {
+                  Add-Type -AssemblyName System.Drawing
+                  $fontCollection = New-Object Drawing.Text.InstalledFontCollection
+                  return $fontCollection.Families |
+                      Where-Object { $_.Name -eq 'Twemoji Mozilla' } |
+                      Select-Object -First 1
+              } catch {
+                  return $null
+              } finally {
+                  if ($null -ne $fontCollection) {
+                      $fontCollection.Dispose()
+                  }
+              }
+          }
+
+          function Install-TwemojiMozilla {
+              param([string]$SourcePath)
+
+              $fontHash = '6D90152EE0D29E82FE2A87793AF5AA4B7AD13E6538360889E141E81ED299EE8E'
+              $sourceHash = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash
+              if ($sourceHash -ne $fontHash) {
+                  throw 'The bundled Twemoji Mozilla font does not match the pinned release.'
+              }
+
+              if ($null -ne (Get-InstalledTwemojiMozillaFamily)) {
+                  Write-Host 'A system-visible Twemoji Mozilla font is already installed.'
+                  return
+              }
+
+              $fontFileName = 'Twemoji.Mozilla.WindowsTerminal.ttf'
+              $destinationPath = Join-Path $env:WINDIR "Fonts\$fontFileName"
+              $needsCopy = -not (Test-Path -LiteralPath $destinationPath -PathType Leaf)
+              if (-not $needsCopy) {
+                  $installedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+                  $needsCopy = $installedHash -ne $fontHash
+              }
+
+              if ($needsCopy) {
+                  Write-Host 'Installing Twemoji Mozilla...'
+                  Copy-Item -LiteralPath $SourcePath -Destination $destinationPath -Force
+                  $installedHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+                  if ($installedHash -ne $fontHash) {
+                      throw 'Twemoji Mozilla was not copied successfully.'
+                  }
+              } else {
+                  Write-Host 'Twemoji Mozilla is already installed.'
+              }
+
+              $fontRegistryPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
+              $fontRegistryName = 'Twemoji Mozilla for Windows Terminal (TrueType)'
+              $fontRegistryValues = Get-ItemProperty -LiteralPath $fontRegistryPath
+              $fontRegistryProperty = $fontRegistryValues.PSObject.Properties[$fontRegistryName]
+              $registeredFile = if ($null -eq $fontRegistryProperty) { $null } else { [string]$fontRegistryProperty.Value }
+              $registryChanged = $registeredFile -ne $fontFileName
+              if ($registeredFile -ne $fontFileName) {
+                  New-ItemProperty -LiteralPath $fontRegistryPath -Name $fontRegistryName -Value $fontFileName -PropertyType String -Force | Out-Null
+              }
+
+              if ($needsCopy -or $registryChanged) {
+                  if (-not ('WindowsTerminalInstaller.NativeMethods' -as [type])) {
+                      Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          namespace WindowsTerminalInstaller
+          {
+              public static class NativeMethods
+              {
+                  [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+                  public static extern int AddFontResource(string fileName);
+
+                  [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+                  public static extern IntPtr SendMessageTimeout(
+                      IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+                      uint flags, uint timeout, out IntPtr result);
+              }
+          }
+          "@
+                  }
+
+                  $fontsAdded = [WindowsTerminalInstaller.NativeMethods]::AddFontResource($destinationPath)
+                  if ($fontsAdded -eq 0) {
+                      throw 'Windows could not activate Twemoji Mozilla.'
+                  }
+
+                  $broadcastResult = [IntPtr]::Zero
+                  [void][WindowsTerminalInstaller.NativeMethods]::SendMessageTimeout(
+                      [IntPtr]0xffff,
+                      0x001d,
+                      [IntPtr]::Zero,
+                      [IntPtr]::Zero,
+                      0x0002,
+                      5000,
+                      [ref]$broadcastResult)
+              }
+          }
+
+          try {
+              Test-PayloadChecksums -Root $PSScriptRoot
 
               $packages = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -eq '.msix' })
               $certificates = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -eq '.cer' })
+              $fonts = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Name -eq 'Twemoji.Mozilla.ttf' })
               if ($packages.Count -ne 1) {
                   throw "Expected exactly one MSIX beside this installer, found $($packages.Count)."
               }
               if ($certificates.Count -ne 1) {
                   throw "Expected exactly one certificate beside this installer, found $($certificates.Count)."
               }
-
-              $versionMatch = [regex]::Match($packages[0].BaseName, '_(\d+\.\d+\.\d+\.\d+)_')
-              if (-not $versionMatch.Success) {
-                  throw "Could not determine the package version from $($packages[0].Name)."
+              if ($fonts.Count -ne 1) {
+                  throw "Expected exactly one Twemoji Mozilla font beside this installer, found $($fonts.Count)."
               }
-              $packageVersion = [version]$versionMatch.Groups[1].Value
-              $installedPackage = Get-AppxPackage -Name 'WindowsTerminalDev' -ErrorAction SilentlyContinue |
-                  Sort-Object Version -Descending |
-                  Select-Object -First 1
-              if ($null -ne $installedPackage -and [version]$installedPackage.Version -eq $packageVersion) {
-                  Write-Host "Windows Terminal (Dev) $packageVersion is already installed." -ForegroundColor Green
-                  exit 0
+
+              $packageIdentity = Get-MsixMetadata -Path $packages[0].FullName
+              if ($packageIdentity.Name -ne 'WindowsTerminalDev') {
+                  throw "Unexpected package identity: $($packageIdentity.Name)."
               }
 
               $certificate = Get-PfxCertificate -FilePath $certificates[0].FullName
+              if ($certificate.HasPrivateKey) {
+                  throw 'The installer must contain only the public signing certificate.'
+              }
+              if ($certificate.NotBefore -gt [DateTime]::Now -or $certificate.NotAfter -lt [DateTime]::Now) {
+                  throw 'The signing certificate is not currently valid.'
+              }
+
+              if (-not [StringComparer]::OrdinalIgnoreCase.Equals($certificate.Subject, $packageIdentity.Publisher)) {
+                  throw 'The signing certificate subject does not match the MSIX publisher.'
+              }
+              if ($certificate.Thumbprint -ne $packageIdentity.SignerThumbprint) {
+                  throw 'The bundled certificate did not sign this MSIX.'
+              }
+
+              $fontHash = (Get-FileHash -LiteralPath $fonts[0].FullName -Algorithm SHA256).Hash
+              if ($fontHash -ne '6D90152EE0D29E82FE2A87793AF5AA4B7AD13E6538360889E141E81ED299EE8E') {
+                  throw 'The bundled Twemoji Mozilla font does not match the pinned release.'
+              }
+
+              if ($ValidateOnly) {
+                  Write-Host 'Installer payload validation succeeded.' -ForegroundColor Green
+                  exit 0
+              }
+
+              $windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+              $principal = New-Object Security.Principal.WindowsPrincipal($windowsIdentity)
+              $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+              if (-not $isAdministrator) {
+                  Write-Host 'Administrator approval is required to install the font and trust the signing certificate.'
+                  $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+                  $process = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+                  exit $process.ExitCode
+              }
+
+              Install-TwemojiMozilla -SourcePath $fonts[0].FullName
+
               $trustedCertificate = "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)"
               if (-not (Test-Path -LiteralPath $trustedCertificate)) {
                   Write-Host 'Trusting this build signing certificate...'
@@ -240,29 +541,43 @@ jobs:
                   Write-Host 'Signing certificate is already trusted.'
               }
 
-              $dependencyDir = Join-Path $PSScriptRoot 'Dependencies\x64'
-              $dependencies = @()
-              if (Test-Path -LiteralPath $dependencyDir) {
-                  $dependencies = @(
-                      Get-ChildItem -LiteralPath $dependencyDir -File |
-                          Where-Object { $_.Extension -in '.appx', '.msix', '.appxbundle', '.msixbundle' } |
-                          ForEach-Object { $_.FullName }
-                  )
+              $installedPackage = Get-AppxPackage -Name $packageIdentity.Name -ErrorAction SilentlyContinue |
+                  Sort-Object Version -Descending |
+                  Select-Object -First 1
+              if ($null -ne $installedPackage -and [version]$installedPackage.Version -eq $packageIdentity.Version) {
+                  Write-Host "Windows Terminal (Dev) $($packageIdentity.Version) is already installed."
+              } else {
+                  $dependencyDir = Join-Path $PSScriptRoot 'Dependencies\x64'
+                  $dependencies = @()
+                  if (Test-Path -LiteralPath $dependencyDir) {
+                      $dependencies = @(
+                          Get-ChildItem -LiteralPath $dependencyDir -File |
+                              Where-Object { $_.Extension -in '.appx', '.msix', '.appxbundle', '.msixbundle' } |
+                              ForEach-Object { $_.FullName }
+                      )
+                  }
+
+                  Write-Host 'Installing Windows Terminal (Dev)...'
+                  $parameters = @{
+                      Path = $packages[0].FullName
+                      ForceApplicationShutdown = $true
+                      ForceUpdateFromAnyVersion = $true
+                  }
+                  if ($dependencies.Count -gt 0) {
+                      $parameters.DependencyPath = [string[]]$dependencies
+                  }
+                  Add-AppxPackage @parameters
               }
 
-              Write-Host 'Installing Windows Terminal (Dev)...'
-              $parameters = @{
-                  Path = $packages[0].FullName
-                  ForceApplicationShutdown = $true
-                  ForceUpdateFromAnyVersion = $true
+              $verifiedPackage = Get-AppxPackage -Name $packageIdentity.Name -ErrorAction SilentlyContinue |
+                  Where-Object { [version]$_.Version -eq $packageIdentity.Version } |
+                  Select-Object -First 1
+              if ($null -eq $verifiedPackage) {
+                  throw "Windows Terminal (Dev) $($packageIdentity.Version) was not registered successfully."
               }
-              if ($dependencies.Count -gt 0) {
-                  $parameters.DependencyPath = [string[]]$dependencies
-              }
-              Add-AppxPackage @parameters
 
               Write-Host ''
-              Write-Host 'Windows Terminal (Dev) installed successfully.' -ForegroundColor Green
+              Write-Host "Windows Terminal (Dev) $($packageIdentity.Version) and Twemoji Mozilla are installed." -ForegroundColor Green
               exit 0
           } catch {
               Write-Host ''
@@ -283,6 +598,7 @@ jobs:
           "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1"
           set "INSTALL_EXIT_CODE=%ERRORLEVEL%"
           echo.
+          if "%INSTALL_EXIT_CODE%"=="0" echo Installation completed successfully.
           if not "%INSTALL_EXIT_CODE%"=="0" echo Installation failed. See the error above.
           pause
           exit /b %INSTALL_EXIT_CODE%
@@ -291,21 +607,41 @@ jobs:
           $readme = @'
           Windows Terminal (Dev) - country flag emoji build
 
-          1. Install a supported emoji font, such as Twemoji Mozilla.
-          2. Double-click Install.cmd.
-          3. Approve the Windows administrator prompt.
+          1. Double-click Install.cmd.
+          2. Approve the Windows administrator prompt.
 
-          The installer trusts only this build's public signing certificate in the
-          Local Machine Trusted People store, installs the required x64 dependency,
-          and then installs or updates Windows Terminal (Dev).
+          Install.ps1 verifies every bundled file, installs the pinned Twemoji Mozilla
+          font, trusts only this build's public signing certificate, installs the
+          required x64 dependencies, and installs or updates Windows Terminal (Dev).
+
+          Twemoji Mozilla is distributed under the licenses in Twemoji-LICENSE.md.
           '@
 
           Set-Content -LiteralPath (Join-Path $installerDir "Install.ps1") -Value $installScript -Encoding ascii
           Set-Content -LiteralPath (Join-Path $installerDir "Install.cmd") -Value $launcher -Encoding ascii
           Set-Content -LiteralPath (Join-Path $installerDir "README-FIRST.txt") -Value $readme -Encoding ascii
 
+          $checksumLines = @(
+            Get-ChildItem -LiteralPath $installerDir -File -Recurse |
+              Sort-Object FullName |
+              ForEach-Object {
+                $relativePath = $_.FullName.Substring($installerDir.Length).TrimStart('\').Replace('\', '/')
+                $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+                "$hash`t$relativePath"
+              }
+          )
+          Set-Content -LiteralPath (Join-Path $installerDir "SHA256SUMS.txt") -Value $checksumLines -Encoding ascii
+
           Write-Output "Prepared installer from $($msix.FullName):"
           Get-ChildItem -LiteralPath $installerDir -Recurse | ForEach-Object { Write-Output $_.FullName }
+
+      - name: Validate installer payload
+        run: >-
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          -NoProfile
+          -ExecutionPolicy Bypass
+          -File .\installer\Install.ps1
+          -ValidateOnly
 
       - name: Upload MSIX Installer
         uses: actions/upload-artifact@v4
