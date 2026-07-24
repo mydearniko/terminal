@@ -2448,104 +2448,104 @@ public:
             renderSettings.SetColorTableEntry(i, RGB(0, 0, 0));
         }
 
-        // Dynamic color reports begin with an OSC, parameter 4, another parameter for the index, and end with BEL.
+        // Dynamic color reports begin with an OSC, parameter 4, another parameter for the index, and end with ST.
         const auto OSC = L"\033]";
-        const auto terminator = L"\a";
+        const auto ST = L"\033\\";
 
         _pDispatch->RequestColorTableEntry(0);
         std::wstring expectedResponse = OSC;
         expectedResponse += L"4;0;rgb:0000/0000/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(1);
         expectedResponse = OSC;
         expectedResponse += L"4;1;rgb:cccc/2424/2424";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(2);
         expectedResponse = OSC;
         expectedResponse += L"4;2;rgb:3333/cccc/3333";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(3);
         expectedResponse = OSC;
         expectedResponse += L"4;3;rgb:cccc/cccc/3333";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(4);
         expectedResponse = OSC;
         expectedResponse += L"4;4;rgb:3333/3333/cccc";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(5);
         expectedResponse = OSC;
         expectedResponse += L"4;5;rgb:cccc/3333/cccc";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(6);
         expectedResponse = OSC;
         expectedResponse += L"4;6;rgb:3333/cccc/cccc";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(7);
         expectedResponse = OSC;
         expectedResponse += L"4;7;rgb:7878/7878/7878";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(8);
         expectedResponse = OSC;
         expectedResponse += L"4;8;rgb:4545/4545/4545";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(9);
         expectedResponse = OSC;
         expectedResponse += L"4;9;rgb:ffff/0000/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(10);
         expectedResponse = OSC;
         expectedResponse += L"4;10;rgb:0000/ffff/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(11);
         expectedResponse = OSC;
         expectedResponse += L"4;11;rgb:ffff/ffff/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(12);
         expectedResponse = OSC;
         expectedResponse += L"4;12;rgb:0000/0000/ffff";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(13);
         expectedResponse = OSC;
         expectedResponse += L"4;13;rgb:ffff/0000/ffff";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(14);
         expectedResponse = OSC;
         expectedResponse += L"4;14;rgb:0000/ffff/ffff";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         _pDispatch->RequestColorTableEntry(15);
         expectedResponse = OSC;
         expectedResponse += L"4;15;rgb:ffff/ffff/ffff";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
     }
 
@@ -2576,15 +2576,15 @@ public:
         renderSettings.SetColorTableEntry(TextColor::DEFAULT_BACKGROUND, RGB(12, 12, 12));
         renderSettings.SetColorTableEntry(TextColor::CURSOR_COLOR, RGB(255, 0, 0));
 
-        // Dynamic color reports begin with an OSC, a parameter matching the requested value, and end with BEL.
+        // Dynamic color reports begin with an OSC, a parameter matching the requested value, and end with ST.
         const auto OSC = L"\033]";
-        const auto terminator = L"\a";
+        const auto ST = L"\033\\";
 
         // Foreground mapped to DARK_WHITE
         _pDispatch->RequestXtermColorResource(10);
         std::wstring expectedResponse = OSC;
         expectedResponse += L"10;rgb:7878/7878/7878";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         // Foreground mapped to independent foreground color
@@ -2592,14 +2592,14 @@ public:
         _pDispatch->RequestXtermColorResource(10);
         expectedResponse = OSC;
         expectedResponse += L"10;rgb:bebe/bebe/bebe";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         // Background mapped to DARK_BLACK
         _pDispatch->RequestXtermColorResource(11);
         expectedResponse = OSC;
         expectedResponse += L"11;rgb:0000/0000/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         // Background mapped to independent background color
@@ -2607,7 +2607,7 @@ public:
         _pDispatch->RequestXtermColorResource(11);
         expectedResponse = OSC;
         expectedResponse += L"11;rgb:0c0c/0c0c/0c0c";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         // Foreground and Background mapped to different indices (e.g. via DECAC)
@@ -2620,17 +2620,17 @@ public:
             _pDispatch->RequestXtermColorResource(11);
             expectedResponse = OSC;
             expectedResponse += L"10;rgb:cccc/2424/2424";
-            expectedResponse += terminator;
+            expectedResponse += ST;
             expectedResponse += OSC;
             expectedResponse += L"11;rgb:0000/ffff/0000";
-            expectedResponse += terminator;
+            expectedResponse += ST;
             _testGetSet->ValidateInputEvent(expectedResponse.c_str());
         }
 
         _pDispatch->RequestXtermColorResource(12);
         expectedResponse = OSC;
         expectedResponse += L"12;rgb:ffff/0000/0000";
-        expectedResponse += terminator;
+        expectedResponse += ST;
         _testGetSet->ValidateInputEvent(expectedResponse.c_str());
 
         // Resource set to unrepresentable color
@@ -4028,7 +4028,7 @@ public:
         _testGetSet->ValidateInputEvent(L"\x1bP!|00000000\x1b\\");
 
         _pDispatch->RequestColorTableEntry(0);
-        _testGetSet->ValidateInputEvent(L"\x1b]4;0;rgb:0c0c/0c0c/0c0c\a");
+        _testGetSet->ValidateInputEvent(L"\x1b]4;0;rgb:0c0c/0c0c/0c0c\x1b\\");
     }
 
 private:

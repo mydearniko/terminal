@@ -32,6 +32,7 @@ public:
     {
         printed.clear();
         passedThrough.clear();
+        passedThroughCalls = 0;
         executed.clear();
         csiId = 0;
         csiParams.clear();
@@ -65,6 +66,7 @@ public:
 
     bool ActionPassThroughString(const std::wstring_view string) override
     {
+        ++passedThroughCalls;
         passedThrough += string;
         return true;
     };
@@ -126,6 +128,10 @@ public:
     // Passed through string.
     std::wstring passedThrough;
 
+    // Number of pass-through transactions. Preserving bytes is not enough when
+    // a reader can wake between two writes.
+    size_t passedThroughCalls = 0;
+
     // Printed string.
     std::wstring printed;
 
@@ -158,6 +164,7 @@ class Microsoft::Console::VirtualTerminal::StateMachineTest
     TEST_METHOD(RunStorageBeforeEscape);
     TEST_METHOD(BulkTextPrint);
     TEST_METHOD(PassThroughUnhandledSplitAcrossWrites);
+    TEST_METHOD(PassThroughTerminalRepliesUseSingleCall);
 
     TEST_METHOD(DcsDataStringsReceivedByHandler);
 
@@ -251,6 +258,7 @@ void StateMachineTest::PassThroughUnhandledSplitAcrossWrites()
 
     machine.ProcessString(L"34h");
     VERIFY_ARE_EQUAL(L"\x1b[?1234h", engine.passedThrough); // whole sequence out, no other output
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), engine.passedThroughCalls); // one transaction for the split sequence
     VERIFY_ARE_EQUAL(L"", engine.printed);
 
     engine.ResetTestState();
@@ -266,6 +274,7 @@ void StateMachineTest::PassThroughUnhandledSplitAcrossWrites()
 
     machine.ProcessString(L"5h");
     VERIFY_ARE_EQUAL(L"\x1b[?2345h", engine.passedThrough); // whole sequence out, no other output
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), engine.passedThroughCalls); // one transaction for the split sequence
     VERIFY_ARE_EQUAL(L"", engine.printed);
 
     engine.ResetTestState();
@@ -277,7 +286,37 @@ void StateMachineTest::PassThroughUnhandledSplitAcrossWrites()
 
     machine.ProcessString(L"\\");
     VERIFY_ARE_EQUAL(L"\x1b]99;foo\x1b\\", engine.passedThrough);
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), engine.passedThroughCalls); // one transaction across the split ST
     VERIFY_ARE_EQUAL(L"", engine.printed);
+}
+
+void StateMachineTest::PassThroughTerminalRepliesUseSingleCall()
+{
+    // These are the exact reply shapes involved in the tmux and Codex reports.
+    static constexpr std::wstring_view replies[]{
+        L"\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\",
+        L"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c",
+    };
+
+    for (const auto reply : replies)
+    {
+        const std::wstring expected{ reply };
+        for (size_t split = 1; split < reply.size(); ++split)
+        {
+            auto enginePtr{ std::make_unique<TestStateMachineEngine>() };
+            auto& engine{ *enginePtr.get() };
+            StateMachine machine{ std::move(enginePtr) };
+            engine.pfnFlushToTerminal = std::bind(&StateMachine::FlushToTerminal, &machine);
+
+            machine.ProcessString(reply.substr(0, split));
+            VERIFY_ARE_EQUAL(L"", engine.passedThrough);
+            VERIFY_ARE_EQUAL(static_cast<size_t>(0), engine.passedThroughCalls);
+
+            machine.ProcessString(reply.substr(split));
+            VERIFY_ARE_EQUAL(expected, engine.passedThrough);
+            VERIFY_ARE_EQUAL(static_cast<size_t>(1), engine.passedThroughCalls);
+        }
+    }
 }
 
 void StateMachineTest::DcsDataStringsReceivedByHandler()

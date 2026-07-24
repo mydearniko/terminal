@@ -1938,31 +1938,32 @@ void StateMachine::ProcessCharacter(const wchar_t wch)
 // - true if the engine successfully handled the string.
 bool StateMachine::FlushToTerminal()
 {
-    auto success{ true };
+    // _pwchCurr is incremented after a call to ProcessCharacter to indicate
+    // that pwchCurr was processed. However, if we're here, then the processing
+    // of pwchChar triggered the engine to request the entire sequence get passed
+    // through, including pwchCurr.
+    const auto currentRun = _CurrentRun();
 
-    if (success && _cachedSequence.has_value())
+    if (_cachedSequence.has_value())
     {
-        // Flush the partial sequence to the terminal before we flush the rest of it.
-        // We always want to clear the sequence, even if we failed, so we don't accumulate bad state
-        // and dump it out elsewhere later.
-        success = _SafeExecute([=]() {
-            return _engine->ActionPassThroughString(*_cachedSequence);
-        });
+        // A sequence can span multiple input reads. Keep the cached prefix and
+        // the completing run together when passing it through. In particular,
+        // ConPTY's input buffer wakes readers for each WriteString call; two
+        // calls here would expose a valid VT reply as two independent chunks and
+        // allow applications with short escape timeouts to mistake the tail for
+        // ordinary keyboard input.
+        auto sequence = std::move(*_cachedSequence);
         _cachedSequence.reset();
-    }
 
-    if (success)
-    {
-        // _pwchCurr is incremented after a call to ProcessCharacter to indicate
-        //      that pwchCurr was processed.
-        // However, if we're here, then the processing of pwchChar triggered the
-        //      engine to request the entire sequence get passed through, including pwchCurr.
-        success = _SafeExecute([=]() {
-            return _engine->ActionPassThroughString(_CurrentRun());
+        return _SafeExecute([&]() {
+            sequence.append(currentRun);
+            return _engine->ActionPassThroughString(sequence);
         });
     }
 
-    return success;
+    return _SafeExecute([=]() {
+        return _engine->ActionPassThroughString(currentRun);
+    });
 }
 
 // Routine Description:

@@ -4871,14 +4871,9 @@ void AdaptDispatch::_ReturnDcsResponse(const std::wstring_view response) const
 
 void AdaptDispatch::_ReturnOscResponse(const std::wstring_view response) const
 {
-    const auto sendC1 = _terminalInput.GetInputMode(TerminalInput::Mode::SendC1);
-    const auto osc = sendC1 ? L"\x9D" : L"\x1B]";
-
-    // BEL and ST are both valid OSC terminators. Prefer the single-byte BEL for
-    // 7-bit responses so a split read cannot strand the ESC from a two-byte ST
-    // in an application's input buffer. Preserve C1 ST when S8C1T is enabled.
-    const auto terminator = sendC1 ? L"\x9C" : L"\x07";
-    _api.ReturnResponse(fmt::format(FMT_COMPILE(L"{}{}{}"), osc, response, terminator));
+    const auto osc = _terminalInput.GetInputMode(TerminalInput::Mode::SendC1) ? L"\x9D" : L"\x1B]";
+    const auto st = _terminalInput.GetInputMode(TerminalInput::Mode::SendC1) ? L"\x9C" : L"\x1B\\";
+    _api.ReturnResponse(fmt::format(FMT_COMPILE(L"{}{}{}"), osc, response, st));
 }
 
 // Routine Description:

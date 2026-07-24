@@ -260,6 +260,7 @@ class Microsoft::Console::VirtualTerminal::InputEngineTest
     TEST_METHOD(AltIntermediateTest);
     TEST_METHOD(AltBackspaceEnterTest);
     TEST_METHOD(ChunkedSequence);
+    TEST_METHOD(TerminalRepliesStayInOneInputBatch);
     TEST_METHOD(SGRMouseTest_ButtonClick);
     TEST_METHOD(SGRMouseTest_Modifiers);
     TEST_METHOD(SGRMouseTest_Movement);
@@ -1005,6 +1006,43 @@ void InputEngineTest::ChunkedSequence()
     StateMachine stateMachine{ std::move(inputEngine) };
     stateMachine.ProcessString(L"\x1b[1");
     VERIFY_ARE_EQUAL(StateMachine::VTStates::CsiParam, stateMachine._state);
+}
+
+void InputEngineTest::TerminalRepliesStayInOneInputBatch()
+{
+    size_t inputBatches = 0;
+    std::wstring received;
+    const auto collectInput = [&](const std::span<const INPUT_RECORD>& records) {
+        ++inputBatches;
+        for (const auto& record : records)
+        {
+            VERIFY_ARE_EQUAL(KEY_EVENT, record.EventType);
+            received.push_back(record.Event.KeyEvent.uChar.UnicodeChar);
+        }
+    };
+
+    auto dispatch = std::make_unique<TestInteractDispatch>(collectInput, nullptr);
+    auto inputEngine = std::make_unique<InputStateMachineEngine>(std::move(dispatch));
+    StateMachine stateMachine{ std::move(inputEngine) };
+
+    stateMachine.ProcessString(L"\x1b]11;rgb:1e1e/1e1e/1e1e");
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), inputBatches);
+    stateMachine.ProcessString(L"\x1b\\");
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), inputBatches);
+    VERIFY_ARE_EQUAL(L"\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\", received);
+
+    inputBatches = 0;
+    received.clear();
+
+    // ConPTY consumes the first DA1 response for its own startup negotiation.
+    stateMachine.ProcessString(L"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c");
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), inputBatches);
+
+    stateMachine.ProcessString(L"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52");
+    VERIFY_ARE_EQUAL(static_cast<size_t>(0), inputBatches);
+    stateMachine.ProcessString(L"c");
+    VERIFY_ARE_EQUAL(static_cast<size_t>(1), inputBatches);
+    VERIFY_ARE_EQUAL(L"\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c", received);
 }
 
 // Method Description:
