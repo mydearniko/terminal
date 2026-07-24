@@ -187,6 +187,31 @@ jobs:
             -Configuration "${{ env.BUILD_CONFIGURATION }}" `
             -Root $testRoot
 
+      - name: Build terminal parser unit tests
+        run: |
+          $solutionDir = "$PWD\"
+          msbuild src\terminal\parser\ut_parser\Parser.UnitTests.vcxproj `
+            "/p:SolutionDir=$solutionDir" `
+            "/p:Configuration=$env:BUILD_CONFIGURATION" `
+            "/p:Platform=$env:BUILD_PLATFORM" `
+            /p:WindowsTerminalOfficialBuild=true `
+            /p:PGOBuildMode=None `
+            /m
+
+      - name: Run terminal parser unit tests
+        run: |
+          $testRoot = Join-Path $PWD "bin\${{ env.BUILD_PLATFORM }}\${{ env.BUILD_CONFIGURATION }}"
+          $testDlls = @(Get-ChildItem -LiteralPath $testRoot -Filter "ConParser.Unit.Tests.dll" -File -Recurse)
+          if ($testDlls.Count -ne 1) {
+            throw "Expected exactly one terminal parser test DLL, found $($testDlls.Count)."
+          }
+
+          & .\build\scripts\Run-Tests.ps1 `
+            -MatchPattern "ConParser.Unit.Tests.dll" `
+            -Platform "${{ env.BUILD_PLATFORM }}" `
+            -Configuration "${{ env.BUILD_CONFIGURATION }}" `
+            -Root $testRoot
+
       - name: Prepare one-click installer
         run: |
           $appPkgs = "src\cascadia\CascadiaPackage\AppPackages"
@@ -606,7 +631,7 @@ jobs:
           '@
 
           $readme = @'
-          Windows Terminal (Dev) - country flag emoji build
+          Windows Terminal (Dev) - flag emoji and terminal-reply integrity build
 
           1. Double-click Install.cmd.
           2. Approve the Windows administrator prompt.
@@ -615,12 +640,36 @@ jobs:
           font, trusts only this build's public signing certificate, installs the
           required x64 dependencies, and installs or updates Windows Terminal (Dev).
 
+          This build keeps standard OSC/CSI/DCS responses enabled and preserves their
+          exact bytes. ConPTY now forwards a reply completed across its own input reads
+          in one input-buffer transaction, so it does not add an avoidable split inside
+          that reply.
+
+          PTYs, SSH, and application input remain byte streams. This installer therefore
+          does not disable terminal queries, alter keyboard protocols, replace SSH, or
+          claim to override an application's own partial-sequence timeout.
+
           Twemoji Mozilla is distributed under the licenses in Twemoji-LICENSE.md.
           '@
+
+          $buildInfo = @"
+          Source commit: ${{ github.sha }}
+          Package version: $env:PACKAGE_VERSION
+          Architecture: $env:BUILD_PLATFORM
+          Configuration: $env:BUILD_CONFIGURATION
+
+          CI verification:
+          - Windows Terminal package build
+          - terminal adapter unit tests
+          - terminal parser unit tests, including every split point of OSC 11 and DA1 replies
+          - installer payload validation
+          - elevated installation smoke test
+          "@
 
           Set-Content -LiteralPath (Join-Path $installerDir "Install.ps1") -Value $installScript -Encoding ascii
           Set-Content -LiteralPath (Join-Path $installerDir "Install.cmd") -Value $launcher -Encoding ascii
           Set-Content -LiteralPath (Join-Path $installerDir "README-FIRST.txt") -Value $readme -Encoding ascii
+          Set-Content -LiteralPath (Join-Path $installerDir "BUILD-INFO.txt") -Value $buildInfo -Encoding ascii
 
           $checksumLines = @(
             Get-ChildItem -LiteralPath $installerDir -File -Recurse |
